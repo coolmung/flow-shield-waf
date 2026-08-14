@@ -159,7 +159,7 @@ curl -fsSL https://fswaf.top/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/Qinver-china/flow-shield-waf/main/install.sh | bash
 ```
 
-脚本会检测 Linux / 宝塔 / macOS（需 Docker Desktop）、安装缺失的 Docker·Compose·Git（macOS 的 Docker 需手动安装）、处理 80/443（可自动调整 Nginx listen）、克隆代码并**本地构建**。首次安装只需输入管理员账号和密码，其余 `.env` 密钥自动随机生成。
+脚本会检测 Linux / 宝塔 / macOS（需 Docker Desktop）、安装缺失的 Docker·Compose·Git（macOS 的 Docker 需手动安装）、处理 80/443（可自动调整 Nginx listen）、克隆代码并**本地构建**。`.env` 服务密钥自动随机生成；全新安装首次打开面板时设置管理员账号密码。
 
 ### 环境要求
 
@@ -189,7 +189,6 @@ cp .env.example .env  #仅首次安装拷贝
 | `REDIS_PASSWORD` | Redis 密码 |
 | `JWT_SECRET` | JWT 签名密钥（建议长随机串） |
 | `WAF_CHALLENGE_SECRET` | 挑战 Cookie HMAC 密钥（建议长随机串） |
-| `WAF_ADMIN_USER` / `WAF_ADMIN_PASSWORD` | 初始管理员（首次启动自动创建） |
 
 生产环境建议同时设置：
 
@@ -244,6 +243,8 @@ nginx -t && systemctl reload nginx
 docker compose up -d --build
 ```
 
+国内构建较慢时，先在 `.env` 中取消「国内构建加速」几行注释（与 `.env.example` 同一组源；不要命令行临时换另一个镜像，否则会打断 Docker 缓存），再执行上述命令。
+
 等待所有容器健康（首次启动约 1–2 分钟）：
 
 ```bash
@@ -270,7 +271,7 @@ docker compose ps
 #### 4. 登录面板并添加站点
 
 1. 打开管理面板：`http://<服务器IP>:9000`
-2. 使用 `.env` 中的 `WAF_ADMIN_USER` / `WAF_ADMIN_PASSWORD` 登录
+2. 全新安装首次打开登录页时设置管理员账号密码
 3. **站点管理** → 新增站点：填写域名、回源地址、监听端口（HTTP/HTTPS）
 4. 若启用 HTTPS，先在**证书管理**上传证书，再在站点中选择
 5. 将域名 DNS 解析到本服务器，流量即经 WAF 防护后回源

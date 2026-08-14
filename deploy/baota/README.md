@@ -31,7 +31,7 @@ git clone https://github.com/Qinver-china/flow-shield-waf.git
 cd flow-shield-waf
 
 cp .env.example .env #仅首次安装拷贝
-vi .env   # 推荐修改：REDIS 密码、JWT_SECRET、WAF_CHALLENGE_SECRET、WAF_ADMIN_PASSWORD
+vi .env   # 推荐修改：REDIS 密码、JWT_SECRET、WAF_CHALLENGE_SECRET
 ```
 
 ### 2. 检查端口
@@ -47,10 +47,11 @@ nginx -t && nginx -s reload
 ### 3. 构建并启动
 
 ```bash
-bash install.sh
 # 或
 docker compose up -d --build
 ```
+
+国内构建较慢时，在 `.env` 中取消「国内构建加速」几行注释后再执行
 
 将启动 **3 个容器**：`redis`、`clickhouse`、`app`。
 
@@ -58,7 +59,7 @@ docker compose up -d --build
 
 ## 三、访问
 
-- 管理面板：`http://<服务器IP>:9000`，用 `.env` 中账号登录。
+- 管理面板：`http://<服务器IP>:9000`。全新安装首次打开登录页时设置管理员账号密码。
 - 添加站点后，把域名解析到本服务器即可。
 
 ## 四、版本更新
