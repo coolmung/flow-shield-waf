@@ -219,28 +219,31 @@ end
 local JS_CHALLENGE_PAGE_HEAD = [[<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>正在验证您的浏览器…</title>
+<title></title>
 <style>
-body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.box{text-align:center}.spin{width:44px;height:44px;border:4px solid #334155;border-top-color:#38bdf8;border-radius:50%;margin:0 auto 20px;animation:s 1s linear infinite}
+html,body{height:100%;margin:0}
+body{display:flex;align-items:center;justify-content:center}
+.spin{width:28px;height:28px;border:2px solid #e5e7eb;border-top-color:#9ca3af;border-radius:50%;opacity:0;animation:s .7s linear infinite,fadein .4s ease-out .4s forwards}
 @keyframes s{to{transform:rotate(360deg)}}
-p{color:#94a3b8}
-.brand{margin-top:24px;color:#64748b;font-size:13px}.brand b{color:#38bdf8}
+@keyframes fadein{to{opacity:1}}
 </style></head>
-<body><div class="box">
-<div class="spin"></div>
-<h3>正在验证您的浏览器…</h3>
-<p>请稍候，此过程为自动完成，用于防护恶意流量。</p>
-<div class="brand">由 <b>流盾WAF</b> · Flow Shield WAF 提供防护</div>
+<body>
+<div class="spin" aria-hidden="true"></div>
 <script>
 ]]
 
 local JS_CHALLENGE_PAGE_TAIL = [[
 </script>
-</div></body></html>]]
+</body></html>]]
 
-local function js_deny_html(message)
+local function js_deny_html(message, ctx)
     message = message or "当前请求未通过安全检查。"
+    local rid = ""
+    if type(ctx) == "table" and type(ctx.request_id) == "string" then
+        rid = ctx.request_id
+    elseif ngx.var.request_id and ngx.var.request_id ~= "" then
+        rid = ngx.var.request_id
+    end
     local html = [[<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -248,17 +251,70 @@ local function js_deny_html(message)
 <style>
 body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
 .box{text-align:center;max-width:420px;padding:0 20px}
-h3{margin:0 0 12px}p{color:#94a3b8;margin:0}
+h3{margin: 0 0 12px; margin-bottom: 30px; font-size: 36px; color:rgb(221, 70, 68);}p{color:#94a3b8;margin:0}
+.rid{font-family:monospace;font-size:12px;color:#475569;margin-top:24px;word-break:break-all}
 </style></head>
 <body><div class="box">
 <h3>访问被拒绝</h3>
 <p>]] .. html_attr(message) .. [[</p>
+<div class="rid">Request ID: ]] .. html_attr(rid) .. [[</div>
 </div></body></html>]]
     ngx.status = ngx.HTTP_FORBIDDEN
     ngx.header["Content-Type"] = "text/html; charset=utf-8"
     ngx.header["Cache-Control"] = "no-store"
+    if rid ~= "" then
+        ngx.header["X-WAF-Request-Id"] = rid
+    end
     ngx.say(html)
     return ngx.exit(ngx.HTTP_FORBIDDEN)
+end
+
+local function log_js_fail(ctx, reason, detail)
+    local rid = ""
+    if type(ctx) == "table" and ctx.request_id then
+        rid = tostring(ctx.request_id)
+    end
+    if detail and detail ~= "" then
+        ngx.log(ngx.WARN, "waf js: verify failed reason=", reason,
+            " request_id=", rid, " ", detail)
+    else
+        ngx.log(ngx.WARN, "waf js: verify failed reason=", reason,
+            " request_id=", rid)
+    end
+end
+
+-- Recover rule meta from a prior jsctx so token/IP reissue keeps clearance scope.
+local function recover_js_meta(token)
+    if type(token) ~= "string" or token == "" then
+        return {}
+    end
+    local ctx_key = "jsctx:" .. ngx.md5(token)
+    local raw = store:get(ctx_key)
+    if not raw then
+        return {}
+    end
+    store:delete(ctx_key)
+    local old = cjson.decode(raw)
+    if type(old) ~= "table" then
+        return {}
+    end
+    return {
+        source = old.source,
+        id = old.rule_id,
+        keys = old.keys,
+    }
+end
+
+-- Decode JS challenge context; do not require source/rule_id (empty-meta reissue).
+local function decode_js_payload(raw)
+    local parsed = cjson.decode(raw)
+    if type(parsed) ~= "table" then
+        return nil
+    end
+    if not parsed.cid or not parsed.seed or not parsed.base_difficulty then
+        return nil
+    end
+    return parsed
 end
 
 local function js_challenge_html(token, payload)
@@ -291,7 +347,8 @@ function _M.js_challenge(ctx, meta)
     end
     local server_score = js_pow.server_suspicion_score()
     if js_pow.should_block_server(server_score) then
-        return js_deny_html("自动化客户端未通过浏览器安全检查。")
+        log_js_fail(ctx, "server_bot", "score=" .. tostring(server_score))
+        return js_deny_html("自动化客户端未通过浏览器安全检查。", ctx)
     end
 
     local payload = js_pow.new_challenge_payload(meta, server_score)
@@ -308,6 +365,9 @@ function _M.js_challenge(ctx, meta)
     ngx.status = 503
     ngx.header["Content-Type"] = "text/html; charset=utf-8"
     ngx.header["Cache-Control"] = "no-store"
+    if ctx and ctx.request_id then
+        ngx.header["X-WAF-Request-Id"] = ctx.request_id
+    end
     ngx.say(js_challenge_html(token, payload))
     return ngx.exit(503)
 end
@@ -320,6 +380,14 @@ local function read_js_verify_args()
     return ngx.req.get_uri_args() or {}
 end
 
+local function js_meta_from_payload(payload)
+    return {
+        source = payload.source,
+        id = payload.rule_id,
+        keys = payload.keys,
+    }
+end
+
 function _M.handle_js_verify(ctx)
     local args = read_js_verify_args()
     local return_url = client_return_url(args)
@@ -328,31 +396,22 @@ function _M.handle_js_verify(ctx)
         token = token[1]
     end
     if not parse_token(token) then
-        return _M.js_challenge(ctx, {})
+        log_js_fail(ctx, "token_or_ip")
+        return _M.js_challenge(ctx, recover_js_meta(token))
     end
 
     local ctx_key = "jsctx:" .. ngx.md5(token)
     local raw = store:get(ctx_key)
     if not raw then
+        log_js_fail(ctx, "ctx_missing")
         return ngx.redirect(return_url, 302)
     end
 
-    local payload = clearance.decode_rule_meta(raw)
-    if not payload or not payload.cid or not payload.seed or not payload.base_difficulty then
+    local payload = decode_js_payload(raw)
+    if not payload then
         store:delete(ctx_key)
+        log_js_fail(ctx, "payload_invalid")
         return ngx.redirect(return_url, 302)
-    end
-
-    local nonce = args.nonce
-    if type(nonce) == "table" then
-        nonce = nonce[1]
-    end
-    if nonce == nil or nonce == "" then
-        return _M.js_challenge(ctx, {
-            source = payload.source,
-            id = payload.rule_id,
-            keys = payload.keys,
-        })
     end
 
     local fp = args.fp
@@ -363,26 +422,31 @@ function _M.handle_js_verify(ctx)
     if not difficulty then
         store:delete(ctx_key)
         if fp_err == "bot_fp" then
-            return js_deny_html("当前浏览器环境未通过安全检查。")
+            log_js_fail(ctx, "bot_fp", "fp=" .. tostring(fp))
+            return js_deny_html("当前浏览器环境未通过安全检查。", ctx)
         end
-        return _M.js_challenge(ctx, {
-            source = payload.source,
-            id = payload.rule_id,
-            keys = payload.keys,
-        })
+        log_js_fail(ctx, "missing_fp")
+        return _M.js_challenge(ctx, js_meta_from_payload(payload))
+    end
+
+    local nonce = args.nonce
+    if type(nonce) == "table" then
+        nonce = nonce[1]
+    end
+    if nonce == nil or nonce == "" then
+        log_js_fail(ctx, "missing_nonce")
+        return _M.js_challenge(ctx, js_meta_from_payload(payload))
     end
 
     if not js_pow.verify_pow(payload.cid, payload.seed, nonce, difficulty) then
-        ngx.log(ngx.WARN, "waf js: pow verification failed")
-        return _M.js_challenge(ctx, {
-            source = payload.source,
-            id = payload.rule_id,
-            keys = payload.keys,
-        })
+        log_js_fail(ctx, "pow_fail", "difficulty=" .. tostring(difficulty))
+        return _M.js_challenge(ctx, js_meta_from_payload(payload))
     end
 
     if not motion_ok(post_arg(args.mt), { min_points = 0 }) then
-        return js_deny_html("当前请求未通过行为安全检查。")
+        store:delete(ctx_key)
+        log_js_fail(ctx, "motion_reject")
+        return js_deny_html("当前请求未通过行为安全检查。", ctx)
     end
 
     store:delete(ctx_key)
@@ -393,12 +457,8 @@ function _M.handle_js_verify(ctx)
     }
     local ext = extractor.new()
     if not clearance.grant(meta, ctx.js_challenge_ttl or 1800, ext) then
-        ngx.log(ngx.ERR, "waf js: clearance grant failed")
-        return _M.js_challenge(ctx, {
-            source = payload.source,
-            id = payload.rule_id,
-            keys = payload.keys,
-        })
+        log_js_fail(ctx, "clearance_fail")
+        return _M.js_challenge(ctx, js_meta_from_payload(payload))
     end
     return ngx.redirect(return_url, 302)
 end
@@ -417,7 +477,7 @@ h3{margin-top:0}.q{font-size:26px;font-weight:700;margin:18px 0;color:#38bdf8}
 input{width:100%%;padding:12px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:16px;box-sizing:border-box}
 button{margin-top:16px;width:100%%;padding:12px;border:0;border-radius:8px;background:#38bdf8;color:#04121f;font-weight:700;font-size:16px;cursor:pointer}
 .tip{color:#94a3b8;font-size:13px;margin-top:14px}
-.brand{margin-top:18px;color:#64748b;font-size:12px}.brand b{color:#38bdf8}
+.brand{margin-top:18px;color:#64748b;font-size:12px}.brand b,.brand a{color:#38bdf8}.brand a{text-decoration:none}.brand a:hover{text-decoration:underline}
 </style></head>
 <body><div class="card">
 <h3>请完成数学计算验证</h3>
@@ -528,7 +588,7 @@ h3{margin:0 0 8px;text-align:center}
 .tile-float{position:absolute;top:0;left:0;z-index:2;touch-action:none;cursor:grab;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4))}
 .tile-float:active{cursor:grabbing}
 .drag-tip{color:#64748b;font-size:13px;text-align:center;margin:12px 0 0;min-height:18px}
-.brand{margin-top:16px;color:#64748b;font-size:12px;text-align:center}.brand b{color:#38bdf8}
+.brand{margin-top:16px;color:#64748b;font-size:12px;text-align:center}.brand b,.brand a{color:#38bdf8}.brand a{text-decoration:none}.brand a:hover{text-decoration:underline}
 .loading{text-align:center;color:#94a3b8;padding:40px 0}
 #panel{min-height:240px}
 </style></head>

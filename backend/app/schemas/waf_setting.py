@@ -95,6 +95,7 @@ class TimezoneOption(BaseModel):
 class DisplaySettings(BaseModel):
     timezone: str = DEFAULT_TIMEZONE
     panel_public_url: str = Field(min_length=8, max_length=512)
+    acme_account_email: str | None = Field(default=None, max_length=254)
 
     @field_validator("timezone")
     @classmethod
@@ -111,16 +112,45 @@ class DisplaySettings(BaseModel):
             raise ValueError("面板地址必须以 http:// 或 https:// 开头")
         return normalized
 
+    @field_validator("acme_account_email", mode="before")
+    @classmethod
+    def _validate_acme_account_email(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if "@" not in text or "." not in text.rsplit("@", 1)[-1]:
+            raise ValueError("ACME 账户邮箱格式无效")
+        return text.lower()
+
 
 class DisplaySettingsOut(DisplaySettings):
     timezone_options: list[TimezoneOption] = Field(
         default_factory=lambda: [TimezoneOption.model_validate(opt) for opt in TIMEZONE_OPTIONS]
     )
+    backend_port: int = 8000
+    panel_port: int | None = None
 
     @classmethod
-    def from_row(cls, row) -> "DisplaySettingsOut":
+    def from_row(
+        cls,
+        row,
+        *,
+        backend_port: int | None = None,
+        panel_port: int | None = None,
+    ) -> "DisplaySettingsOut":
+        from app.services.listen_ports import port_from_url
+
         tz = getattr(row, "timezone", None) or DEFAULT_TIMEZONE
         if tz not in ALLOWED_TIMEZONES:
             tz = DEFAULT_TIMEZONE
         panel_url = getattr(row, "panel_public_url", None) or ""
-        return cls(timezone=tz, panel_public_url=panel_url)
+        resolved_panel = panel_port if panel_port is not None else port_from_url(panel_url, implicit=False)
+        return cls(
+            timezone=tz,
+            panel_public_url=panel_url,
+            acme_account_email=getattr(row, "acme_account_email", None) or None,
+            backend_port=backend_port if backend_port is not None else 8000,
+            panel_port=resolved_panel,
+        )

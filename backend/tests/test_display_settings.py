@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from app.constants.display_settings import ALLOWED_TIMEZONES, DEFAULT_TIMEZONE
-from app.schemas.waf_setting import DisplaySettings
+from app.schemas.waf_setting import DisplaySettings, DisplaySettingsOut
 from app.services.waf_settings import infer_panel_public_url
 
 
@@ -81,3 +81,23 @@ def test_infer_panel_public_url_forwarded_host_with_port_header():
 def test_infer_panel_public_url_omits_default_http_port():
     request = _make_request(host="waf.example.com", forwarded_port="80")
     assert infer_panel_public_url(request) == "http://waf.example.com"
+
+
+def test_display_settings_out_exposes_runtime_ports():
+    row = SimpleNamespace(
+        timezone="Asia/Shanghai",
+        panel_public_url="https://waf.example.com:9010",
+        acme_account_email="ops@example.com",
+    )
+    out = DisplaySettingsOut.from_row(row, backend_port=8001)
+    assert out.backend_port == 8001
+    assert out.panel_port == 9010
+    assert out.acme_account_email == "ops@example.com"
+
+
+def test_display_settings_normalizes_acme_email():
+    settings = DisplaySettings(
+        panel_public_url="http://127.0.0.1:9000",
+        acme_account_email="  Ops@Example.COM  ",
+    )
+    assert settings.acme_account_email == "ops@example.com"

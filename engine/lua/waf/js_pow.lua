@@ -4,7 +4,9 @@ local motion_trail = require "waf.motion_trail"
 
 local _M = {}
 
-local BLOCK_SCORE = 60
+-- Soft signals (empty plugins, Chromium shells without window.chrome) must not
+-- alone trip this; raise above typical domestic-browser false-positive stacks.
+local BLOCK_SCORE = 80
 local MIN_DIFFICULTY = 3
 local MAX_DIFFICULTY = 7
 local CHALLENGE_TTL = 300
@@ -150,6 +152,10 @@ function _M.challenge_ttl()
     return CHALLENGE_TTL
 end
 
+function _M.block_score()
+    return BLOCK_SCORE
+end
+
 function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
     return motion_trail.client_js() .. [[
 (function(){
@@ -157,9 +163,15 @@ function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
   var cid=]] .. cid_js .. [[;
   var seed=]] .. seed_js .. [[;
   var baseDifficulty=]] .. tostring(base_difficulty) .. [[;
+  var blockScore=]] .. tostring(BLOCK_SCORE) .. [[;
+
+  function isDomesticShell(ua){
+    return /QQBrowser|MQQBrowser|360(?:SE|EE|Browser)|QihooBrowser|MetaSr|Sogou|UCBrowser|UBBrowser|HuaweiBrowser|MiuiBrowser|VivoBrowser|HeyTapBrowser|Quark|LenovoBrowser|Maxthon|TheWorld|2345Explorer|BIDUBrowser|LBBROWSER|MicroMessenger|WxWork/i.test(ua||"");
+  }
 
   function fingerprintScore(){
     var s=0;
+    var ua=navigator.userAgent||"";
     if(navigator.webdriver)s+=100;
     try{
       var c=document.createElement("canvas");
@@ -180,8 +192,8 @@ function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
         }
       }
     }catch(e){}
-    if(/Chrome/i.test(navigator.userAgent)&&!window.chrome)s+=30;
-    if(!navigator.plugins||navigator.plugins.length===0)s+=25;
+    if(/Chrome/i.test(ua)&&!window.chrome&&!isDomesticShell(ua))s+=30;
+    if(!navigator.plugins||navigator.plugins.length===0)s+=10;
     if(!navigator.languages||navigator.languages.length===0)s+=20;
     if(!screen.width||!screen.height)s+=40;
     if(window.cdc_adoQpoasnfa76pfcZLmcfl_Array||window.__webdriver_evaluate||window.__selenium_unwrapped)s+=80;
@@ -233,6 +245,14 @@ function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
     return null;
   }
 
+  function showFail(msg){
+    document.title="访问被拒绝";
+    document.body.style.cssText="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0";
+    document.body.innerHTML='<div style="text-align:center;max-width:420px;padding:0 20px"><h3 style="margin:0 0 12px">访问被拒绝</h3><p style="color:#94a3b8;margin:0"></p></div>';
+    var p=document.body.querySelector("p");
+    if(p)p.textContent=msg||"当前请求未通过安全检查。";
+  }
+
   function submit(nonce,fp){
     var dest=location.href;
     var body="t="+encodeURIComponent(token)
@@ -248,16 +268,19 @@ function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
       redirect:"follow"
     }).then(function(resp){
       if(resp.redirected){location.href=resp.url;return;}
+      if(resp.status===403){
+        return resp.text().then(function(html){
+          document.open();document.write(html);document.close();
+        });
+      }
       location.href=dest;
     }).catch(function(){location.href=dest;});
   }
 
   function run(){
     var fp=fingerprintScore();
-    if(fp>=60){
-      document.querySelector(".box h3").textContent="访问被拒绝";
-      document.querySelector(".box p").textContent="当前环境未通过浏览器安全检查。";
-      document.querySelector(".spin").style.display="none";
+    if(fp>=blockScore){
+      submit("0",fp);
       return;
     }
     var extra=Math.floor(fp/25);
@@ -267,7 +290,7 @@ function _M.client_script(token_js, cid_js, seed_js, base_difficulty)
   setTimeout(function(){
     var nonce=solvePow(difficulty);
     if(nonce===null){
-      document.querySelector(".box p").textContent="验证超时，请刷新页面重试。";
+      showFail("验证超时，请刷新页面重试。");
       return;
     }
     submit(nonce,fp);

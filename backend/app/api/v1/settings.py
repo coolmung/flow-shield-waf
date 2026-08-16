@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.db import get_db
 from app.models import User
 from app.schemas.common import ok
@@ -185,7 +186,7 @@ async def get_display_settings(
         row.panel_public_url = waf_settings.infer_panel_public_url(request)
         await db.commit()
         await db.refresh(row)
-    return ok(DisplaySettingsOut.from_row(row).model_dump())
+    return ok(DisplaySettingsOut.from_row(row, backend_port=settings.backend_port).model_dump())
 
 
 @router.put("/display")
@@ -197,6 +198,7 @@ async def update_display_settings(
     row = await waf_settings.get_or_create(db)
     row.timezone = body.timezone
     row.panel_public_url = body.panel_public_url
+    row.acme_account_email = body.acme_account_email
     await db.commit()
     await db.refresh(row)
-    return ok(DisplaySettingsOut.from_row(row).model_dump())
+    return ok(DisplaySettingsOut.from_row(row, backend_port=settings.backend_port).model_dump())
