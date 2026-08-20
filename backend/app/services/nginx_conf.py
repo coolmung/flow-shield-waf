@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -17,6 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.constants.engine_settings import (
+    DEFAULT_MAX_UPLOAD_SIZE_MB,
+    DEFAULT_ORIGIN_READ_TIMEOUT_SEC,
+)
 from app.core.redis import get_redis
 from app.constants.client_ip import REAL_IP_HEADER_BY_SOURCE
 from app.models import Site
@@ -32,6 +37,7 @@ log = logging.getLogger("waf.nginx_conf")
 
 RELOAD_KEY = "waf:nginx:reload"
 ENGINE_NGINX_CONF = "/usr/local/openresty/nginx/conf/nginx.conf"
+ENGINE_PID_PATH = "/usr/local/openresty/nginx/logs/nginx.pid"
 ENGINE_RELOAD_CMD = (
     "/usr/local/openresty/bin/openresty",
     "-s",
@@ -39,6 +45,49 @@ ENGINE_RELOAD_CMD = (
     "-c",
     ENGINE_NGINX_CONF,
 )
+
+
+def render_client_max_body_size(mb: int) -> str:
+    """Render the http-level Nginx snippet for the configured upload cap."""
+    size = int(mb) if mb else DEFAULT_MAX_UPLOAD_SIZE_MB
+    return f"client_max_body_size {size}m;\n"
+
+
+def _write_text_atomic(path: str, content: str) -> None:
+    """Replace ``path`` via a same-directory temp file so reload never reads a truncated snippet."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".waf-snippet.", suffix=".tmp", dir=directory or None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def apply_client_max_body_size(mb: int) -> None:
+    """Write client_max_body_size so OpenResty picks it up on the next reload."""
+    _write_text_atomic(settings.engine_client_max_body_conf, render_client_max_body_size(mb))
+
+
+def render_origin_read_timeout(sec: int) -> str:
+    """Render http-level origin proxy timeouts (read + send)."""
+    timeout = int(sec) if sec else DEFAULT_ORIGIN_READ_TIMEOUT_SEC
+    return (
+        f"proxy_read_timeout {timeout}s;\n"
+        f"proxy_send_timeout {timeout}s;\n"
+    )
+
+
+def apply_origin_read_timeout(sec: int) -> None:
+    """Write origin proxy timeouts so OpenResty picks them up on the next reload."""
+    _write_text_atomic(settings.engine_origin_timeout_conf, render_origin_read_timeout(sec))
 
 
 @dataclass(frozen=True)
@@ -118,6 +167,7 @@ server {{
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $waf_connection_upgrade;
+        proxy_set_header X-WAF-Request-Id $waf_request_id;
 {proxy_buffering_line}        proxy_pass {upstream};
     }}
 }}
@@ -313,14 +363,62 @@ def render_site(site: Site) -> str:
     return main_block
 
 
-async def regenerate(db: AsyncSession) -> EngineReloadResult:
+def _engine_is_running() -> bool:
+    """Return True if nginx.pid exists and the OpenResty master is alive."""
+    try:
+        with open(ENGINE_PID_PATH, encoding="utf-8") as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+async def regenerate(
+    db: AsyncSession,
+    *,
+    skip_reload_if_engine_down: bool = False,
+) -> EngineReloadResult:
     """Rewrite conf.d for all enabled sites, drop stale files, trigger reload.
 
     Returns an EngineReloadResult. Conf files are always written first;
     callers that already committed DB state should treat failure as soft.
+
+    Args:
+        db: Session used to load sites and engine settings.
+        skip_reload_if_engine_down: When True, write conf.d but skip
+            ``openresty -s reload`` if the engine is not running yet
+            (cold start). Default False keeps existing caller behavior.
+
+    Returns:
+        Reload result. ``ok`` is True when reload succeeded, or when reload
+        was skipped because the engine had not started.
     """
     conf_dir = settings.engine_conf_dir
     os.makedirs(conf_dir, exist_ok=True)
+
+    from app.services import waf_settings as waf_settings_svc
+
+    row = await waf_settings_svc.get_or_create(db)
+    snippet_error: str | None = None
+    try:
+        apply_client_max_body_size(
+            int(getattr(row, "max_upload_size_mb", None) or DEFAULT_MAX_UPLOAD_SIZE_MB)
+        )
+        apply_origin_read_timeout(
+            int(
+                getattr(row, "origin_read_timeout_sec", None)
+                or DEFAULT_ORIGIN_READ_TIMEOUT_SEC
+            )
+        )
+    except OSError as exc:
+        snippet_error = str(exc).strip() or exc.__class__.__name__
+        log.error("failed to write engine http snippets: %s", exc)
 
     sites = (
         await db.execute(
@@ -347,6 +445,27 @@ async def regenerate(db: AsyncSession) -> EngineReloadResult:
                 os.remove(os.path.join(conf_dir, fname))
             except OSError:
                 pass
+
+    if snippet_error:
+        result = EngineReloadResult(ok=False, reason="engine", detail=snippet_error)
+        log.info(
+            "regenerated %d site confs (reload_ok=%s reason=%s detail=%s)",
+            len(wanted),
+            result.ok,
+            result.reason,
+            (result.detail or "")[:200],
+        )
+        return result
+
+    # Cold start: engine waits for /health, so pid is not there yet. Conf is
+    # already on disk; OpenResty will load it on first start. Do not call
+    # ``openresty -s reload`` (that would log nginx.pid ENOENT).
+    if skip_reload_if_engine_down and not _engine_is_running():
+        log.info(
+            "regenerated %d site confs (reload skipped: engine not running yet)",
+            len(wanted),
+        )
+        return EngineReloadResult(ok=True)
 
     result = await trigger_reload()
     log.info(

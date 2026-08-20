@@ -6,8 +6,15 @@ source /opt/flowshield/startup-log.sh
 startup_init
 startup_header
 
-mkdir -p /data/engine/conf.d /data/engine/certs /data/acme/http-01 /var/log/supervisor /etc/flowshield /etc/nginx/geoip /run/flowshield
+mkdir -p /data/engine/conf.d /data/engine/certs /data/acme/http-01 /var/log/supervisor /etc/flowshield /etc/nginx/geoip /etc/nginx/snippets /run/flowshield
 rm -f /run/flowshield/backend.sock
+
+if [ ! -s /etc/nginx/snippets/client-max-body.conf ]; then
+  printf '%s\n' 'client_max_body_size 50m;' >/etc/nginx/snippets/client-max-body.conf
+fi
+if [ ! -s /etc/nginx/snippets/origin-timeout.conf ]; then
+  printf '%s\n' 'proxy_read_timeout 60s;' 'proxy_send_timeout 60s;' >/etc/nginx/snippets/origin-timeout.conf
+fi
 
 startup_step "1/5" "初始化运行环境"
 
@@ -21,7 +28,7 @@ SNIP_HTTP="/etc/nginx/snippets/geoip2-http.conf"
 
 if [ -f "$GEOIP_MODULE" ] && compgen -G "$GEOIP_DIR/*.mmdb" >/dev/null; then
   startup_sub "GeoIP2 已启用 (${GEOIP_DIR})"
-  echo "GeoIP2 enabled: using MaxMind databases from ${GEOIP_DIR}" >&2
+  echo "[startup] GeoIP2 enabled: using MaxMind databases from ${GEOIP_DIR}" >&2
   echo "load_module modules/ngx_http_geoip2_module.so;" >"$SNIP_LOAD"
   {
     if [ -f "$GEOIP_DIR/GeoLite2-Country.mmdb" ]; then
