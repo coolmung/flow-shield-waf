@@ -2,7 +2,7 @@
 
 > **流盾 WAF，守住每一次真实访问。**
 
-**官网及详细文档：** [https://fswaf.top](https://fswaf.top)
+**官网及详细文档：** [https://fswaf.cn](https://fswaf.cn)
 
 流盾 WAF 是一款面向网站、业务接口和 Web 应用的**智能流量防护系统**，专注于 CC 攻击防护、恶意访问识别、自动化攻击拦截和网站安全加固。基于 **OpenResty 反向代理**构建：添加站点后，流量先进入流盾引擎再转发到源站；以「域名 + IP + 请求特征」为维度对每个请求做规则匹配与防护，并提供可视化管理面板。支持 Docker Compose 一键部署，兼容宝塔面板。
 
@@ -145,7 +145,7 @@ flow-shield-waf/
 
 ## 安装部署
 
-详细文档见官网：[https://fswaf.top/guide/quick-start](https://fswaf.top/guide/quick-start)
+详细文档见官网：[https://fswaf.cn/guide/quick-start](https://fswaf.cn/guide/quick-start)
 
 ### 一键安装 / 更新（推荐）
 
@@ -153,13 +153,13 @@ flow-shield-waf/
 
 ```bash
 # 推荐链接
-curl -fsSL https://fswaf.top/install.sh | bash
+curl -fsSL https://fswaf.cn/install.sh | bash
 
 # 备用链接（GitHub）
 curl -fsSL https://raw.githubusercontent.com/Qinver-china/flow-shield-waf/main/install.sh | bash
 ```
 
-脚本会检测 Linux / 宝塔 / macOS（需 Docker Desktop）、安装缺失的 Docker·Compose·Git（macOS 的 Docker 需手动安装）、处理 80/443（可自动调整 Nginx listen）、克隆代码并**本地构建**。`.env` 服务密钥与面板安全入口自动随机生成；全新安装需访问带安全入口的地址打开面板，再设置管理员账号密码。
+脚本会检测 Linux / 宝塔 / macOS（需 Docker Desktop）、安装缺失的 Docker·Compose·Git（macOS 的 Docker 需手动安装）、处理 80/443（可自动调整 Nginx listen；宝塔环境下会尝试在系统防火墙放行改后的回源端口）、克隆代码并**本地构建**。`.env` 服务密钥与面板安全入口自动随机生成；全新安装需访问带安全入口的地址打开面板，再设置管理员账号密码。
 
 ### 环境要求
 
@@ -326,7 +326,7 @@ bash scripts/sync-compose-ports.sh && docker compose up -d
 
 > 源站若已在本机占用 9088，不要再映射给流盾（会抢端口）。让流盾继续听 80，只把回源端口填 9088。
 
-完整步骤见官网 [站点配置 · 自定义访问端口](https://fswaf.top/guide/sites#custom-listen-ports)。
+完整步骤见官网 [站点配置 · 自定义访问端口](https://fswaf.cn/guide/sites#custom-listen-ports)。
 
 ---
 
@@ -500,7 +500,7 @@ curl -fsS http://127.0.0.1/waf-health
 
 ```bash
 bash install.sh
-# 或：curl -fsSL https://fswaf.top/install.sh | bash
+# 或：curl -fsSL https://fswaf.cn/install.sh | bash
 ```
 
 完整说明、回滚与检查清单见 [`docs/upgrade.md`](docs/upgrade.md)。
@@ -543,7 +543,7 @@ python3 scripts/stress_test.py --url http://127.0.0.1 --host your.site.com --mix
 
 ## 文档
 
-### 详细文档及教程请查看[https://fswaf.top](https://fswaf.top)
+### 详细文档及教程请查看[https://fswaf.cn](https://fswaf.cn)
 
 | 文档 | 说明 |
 |------|------|
